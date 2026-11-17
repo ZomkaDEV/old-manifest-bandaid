@@ -1,0 +1,90 @@
+name: Build and release
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            name: old-manifest-bandaid-windows-x64.exe
+            upx: true
+          - os: ubuntu-22.04
+            name: old-manifest-bandaid-linux-x64
+            upx: true
+          - os: macos-latest
+            name: old-manifest-bandaid-macos-arm64
+            upx: false
+          - os: macos-15-intel
+            name: old-manifest-bandaid-macos-x64
+            upx: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: python -m pip install pyinstaller -r requirements.txt
+
+      - name: Install UPX (Linux)
+        if: matrix.upx && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl
+
+      - name: Install UPX (Windows)
+        if: matrix.upx && runner.os == 'Windows'
+        run: choco install upx -y --no-progress
+
+      - name: Build
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "${{ matrix.upx }}" = "true" ]; then EXTRA="--upx-dir $(dirname "$(which upx)")"; else EXTRA="--noupx"; fi
+          if [ "$RUNNER_OS" = "Windows" ]; then EXTRA="$EXTRA --uac-admin"; else EXTRA="$EXTRA --strip"; fi
+          pyinstaller --onefile --clean $EXTRA \
+            --name "${{ matrix.name }}" \
+            --exclude-module tkinter --exclude-module unittest \
+            --exclude-module pydoc --exclude-module doctest \
+            --exclude-module sqlite3 --exclude-module ssl \
+            --exclude-module lib2to3 --exclude-module setuptools \
+            --exclude-module pip --exclude-module distutils \
+            main.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Move static release tag to this commit
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest
+          overwrite_files: true
+          files: dist/*
